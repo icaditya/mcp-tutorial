@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"syscall"
 
-	"tutorial/mcp"
+	"reconsaas/mcp"
 
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -36,7 +36,7 @@ func main() {
 	}
 
 	mcpServer := server.NewMCPServer(
-		"tutorial-mcp-server",
+		"reconsaas-mcp-server",
 		version,
 		server.WithLogging(),
 		server.WithToolCapabilities(true),
@@ -47,17 +47,36 @@ func main() {
 	mcpServer.AddTools(
 		mcp.CalculatorTool(),
 		mcp.SystemInfoTool(),
+		// Recon-SaaS tools
+		mcp.ReconDataExtractionTool(),
+		mcp.ReconCombinedEntityTool(),
+		mcp.ReconAggregationTool(),
+		mcp.ReconFileAnalysisTool(),
+		mcp.ReconMasterSourceTool(),
+		mcp.ReconMerchantSourceTool(),
+		mcp.ReconStateRuleTool(),
+		mcp.ReconProcessSetupTool(),
 	)
 
 	mcpServer.AddPrompts(
 		mcp.MathTutorPrompt(),
 		mcp.CodeReviewPrompt(),
+		// Recon-SaaS prompts
+		mcp.ReconDataExtractionPrompt(),
+		mcp.ReconCombinedEntityPrompt(),
+		mcp.ReconAggregationPrompt(),
+		mcp.ReconFileAnalysisPrompt(),
+		mcp.ReconMasterSourcePrompt(),
+		mcp.ReconMerchantSourcePrompt(),
+		mcp.ReconStateRulePrompt(),
+		mcp.ReconProcessSetupPrompt(),
 	)
 
-	mcpServer.AddResources(
-		mcp.SystemStatusResource(),
-		mcp.MathConstantsResource(),
-	)
+	// Note: Resources are currently disabled as they are not implemented
+	// mcpServer.AddResources(
+	// 	mcp.SystemStatusResource(),
+	// 	mcp.MathConstantsResource(),
+	// )
 
 	httpServer := server.NewStreamableHTTPServer(
 		mcpServer,
@@ -69,11 +88,11 @@ func main() {
 		errChan <- httpServer.Start(fmt.Sprintf(":%d", port))
 	}()
 
-	logger.Info("Tutorial MCP Server started", "version", version, "transport", "streamable_http", "port", port)
+	logger.Info("ReconSaas MCP Server started", "version", version, "transport", "streamable_http", "port", port)
 
 	select {
 	case <-ctx.Done():
-		logger.Info("Tutorial MCP Server stopped")
+		logger.Info("ReconSaas MCP Server stopped")
 	case err := <-errChan:
 		if err != nil {
 			logger.Error("Server error", "error", err)
