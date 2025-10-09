@@ -51,6 +51,9 @@ func main() {
 		mcp.ReconFileAnalysisTool(),
 		mcp.ReconMasterSourceTool(),
 		mcp.ReconMerchantSourceTool(),
+		mcp.ReconAggregationTool(),
+		mcp.ReconDataExtractionTool(),
+		mcp.ReconCombinedEntityTool(),
 		mcp.ReconStateRuleTool(),
 		mcp.ReconProcessSetupTool(),
 	)
@@ -62,14 +65,18 @@ func main() {
 		mcp.ReconFileAnalysisPrompt(),
 		mcp.ReconMasterSourcePrompt(),
 		mcp.ReconMerchantSourcePrompt(),
+		mcp.ReconAggregationPrompt(),
+		mcp.ReconDataExtractionPrompt(),
+		mcp.ReconCombinedEntityPrompt(),
 		mcp.ReconStateRulePrompt(),
 		mcp.ReconProcessSetupPrompt(),
 	)
 
-	mcpServer.AddResources(
-		mcp.SystemStatusResource(),
-		mcp.MathConstantsResource(),
-	)
+	// Note: Resources are currently disabled as they are not implemented
+	// mcpServer.AddResources(
+	// 	mcp.SystemStatusResource(),
+	// 	mcp.MathConstantsResource(),
+	// )
 
 	httpServer := server.NewStreamableHTTPServer(
 		mcpServer,

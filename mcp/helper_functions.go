@@ -17,7 +17,242 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// Helper functions for recon-saas API interactions
+// ExtractionConfig defines the configuration for regex-based data extraction
+type ExtractionConfig struct {
+	Logic struct {
+		RegexExec []string `json:"regex_exec"`
+	} `json:"logic"`
+	OutputColumns []string `json:"output_columns"`
+}
+
+// ExtractionStats holds statistics about the extraction process
+type ExtractionStats struct {
+	TotalRows       int      `json:"total_rows"`
+	MatchedRows     int      `json:"matched_rows"`
+	TransformedRows int      `json:"transformed_rows"`
+	SampleMatches   []string `json:"sample_matches"`
+}
+
+// ExtractDataWithRegex performs regex-based data extraction on CSV data
+func ExtractDataWithRegex(filePath, columnName, extractionConfigStr string, inPlaceUpdate bool) ([][]string, *ExtractionStats, error) {
+	// Parse extraction configuration
+	var config ExtractionConfig
+	if err := json.Unmarshal([]byte(extractionConfigStr), &config); err != nil {
+		return nil, nil, fmt.Errorf("invalid extraction config JSON: %v", err)
+	}
+
+	if len(config.Logic.RegexExec) == 0 {
+		return nil, nil, fmt.Errorf("at least one regex pattern must be provided in regex_exec")
+	}
+
+	if len(config.OutputColumns) == 0 {
+		return nil, nil, fmt.Errorf("at least one output column must be specified")
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("file not found: %s", filePath)
+	}
+
+	// Process the CSV file
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error opening file: %v", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, nil, fmt.Errorf("error reading CSV: %v", err)
+	}
+
+	if len(records) == 0 {
+		return nil, nil, fmt.Errorf("CSV file is empty")
+	}
+
+	// Find column index
+	headers := records[0]
+	columnIndex := -1
+	for i, header := range headers {
+		if header == columnName {
+			columnIndex = i
+			break
+		}
+	}
+
+	if columnIndex == -1 {
+		return nil, nil, fmt.Errorf("column '%s' not found. Available columns: %v", columnName, headers)
+	}
+
+	// Compile regex patterns
+	var compiledPatterns []*regexp.Regexp
+	for _, pattern := range config.Logic.RegexExec {
+		// Handle special patterns like $UTR (literal match)
+		if strings.HasPrefix(pattern, "$") {
+			literalValue := strings.TrimPrefix(pattern, "$")
+			// Escape special regex characters for literal matching
+			escapedPattern := regexp.QuoteMeta(literalValue)
+			compiledPatterns = append(compiledPatterns, regexp.MustCompile(escapedPattern))
+		} else {
+			compiledPatterns = append(compiledPatterns, regexp.MustCompile(pattern))
+		}
+	}
+
+	// Process extraction using regex patterns
+	var results [][]string
+	stats := &ExtractionStats{
+		SampleMatches: make([]string, 0),
+	}
+
+	// Prepare headers
+	var newHeaders []string
+	if inPlaceUpdate {
+		// Update original column in place
+		newHeaders = make([]string, len(headers))
+		copy(newHeaders, headers)
+	} else {
+		// Add new output columns
+		newHeaders = append(headers, config.OutputColumns...)
+	}
+	results = append(results, newHeaders)
+
+	// Process each data row
+	for i := 1; i < len(records); i++ {
+		row := records[i]
+		stats.TotalRows++
+
+		if columnIndex >= len(row) {
+			// Column doesn't exist in this row
+			newRow := make([]string, len(newHeaders))
+			copy(newRow, row)
+			results = append(results, newRow)
+			continue
+		}
+
+		originalValue := row[columnIndex]
+		var extractedValues []string
+		var newOriginalValue string
+
+		// Try each regex pattern until one matches
+		matched := false
+		for j, pattern := range compiledPatterns {
+			if matches := pattern.FindStringSubmatch(originalValue); matches != nil {
+				matched = true
+				stats.MatchedRows++
+
+				// Use the first capture group if available, otherwise use the full match
+				if len(matches) > 1 {
+					extractedValue := matches[1]
+					extractedValues = append(extractedValues, extractedValue)
+					newOriginalValue = extractedValue
+				} else {
+					extractedValue := matches[0]
+					extractedValues = append(extractedValues, extractedValue)
+					newOriginalValue = extractedValue
+				}
+
+				// Store sample for reporting
+				if len(stats.SampleMatches) < 5 {
+					stats.SampleMatches = append(stats.SampleMatches,
+						fmt.Sprintf("'%s' → '%s' (pattern %d)", originalValue, extractedValues[0], j+1))
+				}
+				break
+			}
+		}
+
+		if matched {
+			stats.TransformedRows++
+		} else {
+			// No pattern matched, keep original value
+			newOriginalValue = originalValue
+			for range config.OutputColumns {
+				extractedValues = append(extractedValues, "")
+			}
+		}
+
+		// Create new row
+		newRow := make([]string, len(newHeaders))
+		copy(newRow, row)
+
+		if inPlaceUpdate {
+			// Update original column
+			newRow[columnIndex] = newOriginalValue
+		} else {
+			// Add extracted values to new columns
+			for j, extractedValue := range extractedValues {
+				if j < len(config.OutputColumns) {
+					newRow[len(headers)+j] = extractedValue
+				}
+			}
+		}
+
+		results = append(results, newRow)
+	}
+
+	return results, stats, nil
+}
+
+// createExtractionConfig creates an extraction configuration via recon-saas API
+func createExtractionConfig(ctx context.Context, merchantID, sourceID, columnName, extractionConfigStr string) (string, error) {
+	// Parse extraction configuration
+	var config ExtractionConfig
+	if err := json.Unmarshal([]byte(extractionConfigStr), &config); err != nil {
+		return "", fmt.Errorf("invalid extraction config JSON: %v", err)
+	}
+
+	payload := map[string]interface{}{
+		"merchant_id":     merchantID,
+		"source_id":       sourceID,
+		"column_name":     columnName,
+		"extraction_type": "regex",
+		"config": map[string]interface{}{
+			"regex_patterns":    config.Logic.RegexExec,
+			"output_columns":    config.OutputColumns,
+			"enable_extraction": true,
+			"created_at":        time.Now().Format(time.RFC3339),
+		},
+		"metadata": map[string]interface{}{
+			"tool_version":    "1.0.0",
+			"pattern_count":   len(config.Logic.RegexExec),
+			"output_count":    len(config.OutputColumns),
+			"extraction_mode": "regex_based",
+		},
+	}
+
+	result, err := makeReconSaaSAPICall(ctx, "POST", "/v1/admin-recon-saas/extraction/config", payload)
+	if err != nil {
+		return "", err
+	}
+
+	if id, ok := result["id"].(string); ok {
+		return id, nil
+	}
+
+	return fmt.Sprintf("mock_extraction_config_%d", time.Now().Unix()), nil
+}
+
+// applyExtractionToSource applies extraction configuration to a source via recon-saas API
+func applyExtractionToSource(ctx context.Context, merchantID, sourceID, extractionConfigID string) (map[string]interface{}, error) {
+	payload := map[string]interface{}{
+		"merchant_id":          merchantID,
+		"source_id":            sourceID,
+		"extraction_config_id": extractionConfigID,
+		"apply_mode":           "immediate",
+		"options": map[string]interface{}{
+			"create_backup":     true,
+			"validate_results":  true,
+			"notify_completion": false,
+		},
+	}
+
+	result, err := makeReconSaaSAPICall(ctx, "POST", "/v1/admin-recon-saas/extraction/apply", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
 
 // ValidationResult holds the result of validation mode processing
 type ValidationResult struct {
@@ -1251,4 +1486,123 @@ func extractRuleIDs(rules map[string]interface{}) map[string]string {
 	}
 
 	return ruleIDs
+}
+
+// generateExtractionConfig creates a regex extraction configuration based on user's extraction goal and sample data
+func generateExtractionConfig(extractionGoal, sampleData string) string {
+	// Parse sample data to understand patterns
+	samples := strings.Split(sampleData, ",")
+	for i, sample := range samples {
+		samples[i] = strings.TrimSpace(sample)
+	}
+
+	// Generate regex patterns based on extraction goal
+	var patterns []string
+	var outputColumn string
+
+	switch strings.ToLower(extractionGoal) {
+	case "transaction numbers", "transaction number", "txn numbers", "txn number":
+		outputColumn = "TransactionNumber"
+		// Look for patterns like TXN-001-ABC, REF-003-GHI
+		for _, sample := range samples {
+			if matched, _ := regexp.MatchString(`[A-Z]+-([0-9]+)-[A-Z]+`, sample); matched {
+				patterns = append(patterns, `[A-Z]+-([0-9]+)-[A-Z]+`)
+				break
+			}
+		}
+		// If no pattern found, create a generic one
+		if len(patterns) == 0 {
+			patterns = append(patterns, `([0-9]+)`)
+		}
+
+	case "reference codes", "reference code", "ref codes", "ref code":
+		outputColumn = "ReferenceCode"
+		// Look for patterns like TXN-001-ABC, REF-003-GHI
+		for _, sample := range samples {
+			if matched, _ := regexp.MatchString(`[A-Z]+-[0-9]+-([A-Z]+)`, sample); matched {
+				patterns = append(patterns, `[A-Z]+-[0-9]+-([A-Z]+)`)
+				break
+			}
+		}
+		// If no pattern found, create a generic one
+		if len(patterns) == 0 {
+			patterns = append(patterns, `([A-Z]+)`)
+		}
+
+	case "utr numbers", "utr number", "utr":
+		outputColumn = "UTRNumber"
+		// Look for UTR patterns
+		for _, sample := range samples {
+			if matched, _ := regexp.MatchString(`UTR([0-9]+)`, sample); matched {
+				patterns = append(patterns, `UTR([0-9]+)`)
+				break
+			}
+			if matched, _ := regexp.MatchString(`([0-9]+)`, sample); matched {
+				patterns = append(patterns, `([0-9]+)`)
+				break
+			}
+		}
+		// If no pattern found, create a generic one
+		if len(patterns) == 0 {
+			patterns = append(patterns, `([0-9]+)`)
+		}
+
+	case "amount values", "amount value", "amounts", "amount":
+		outputColumn = "Amount"
+		// Look for amount patterns
+		for _, sample := range samples {
+			if matched, _ := regexp.MatchString(`([0-9]+(?:\.[0-9]+)?)`, sample); matched {
+				patterns = append(patterns, `([0-9]+(?:\.[0-9]+)?)`)
+				break
+			}
+		}
+		// If no pattern found, create a generic one
+		if len(patterns) == 0 {
+			patterns = append(patterns, `([0-9]+(?:\.[0-9]+)?)`)
+		}
+
+	default:
+		// Generic extraction - try to extract numbers
+		outputColumn = "ExtractedValue"
+		patterns = append(patterns, `([0-9]+)`)
+	}
+
+	// Create the extraction config
+	config := ExtractionConfig{
+		Logic: struct {
+			RegexExec []string `json:"regex_exec"`
+		}{
+			RegexExec: patterns,
+		},
+		OutputColumns: []string{outputColumn},
+	}
+
+	// Convert to JSON
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		// Fallback to a simple config
+		return `{"logic":{"regex_exec":["([0-9]+)"]},"output_columns":["ExtractedValue"]}`
+	}
+
+	return string(configJSON)
+}
+
+// generateCombinationConfig creates a JSON configuration for entity combination
+func generateCombinationConfig(columnNames []string, separator, entityColumnName string) string {
+	config := map[string]interface{}{
+		"combination_logic": map[string]interface{}{
+			"columns_to_combine": columnNames,
+			"separator":          separator,
+			"entity_column_name": entityColumnName,
+			"enabled":            true,
+			"patch_logic":        true,
+		},
+		"processing_mode": "real_time",
+		"entity_creation": map[string]interface{}{
+			"strategy": "combine_columns",
+			"method":   "database_patch",
+		},
+	}
+	configJSON, _ := json.Marshal(config)
+	return string(configJSON)
 }
