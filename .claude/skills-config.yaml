@@ -1,0 +1,23 @@
+# Skill Configuration for MCP Tutorial Repository
+# This file controls which skills are loaded and their versions
+
+context: codebase
+
+# Skills to load from this repository
+local_skills:
+  recon-saas-onboarding:
+    version: "1.0.0"
+    enabled: true
+
+# Tags to include (filter shared skills by these tags)
+include_tags:
+  - recon
+  - reconciliation
+  - api
+  - onboarding
+
+# Tags to exclude (skip skills with these tags)
+exclude_tags:
+  - business
+  - documents
+  - presentations
